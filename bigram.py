@@ -1,13 +1,30 @@
+# importing the libraries 
+
+import torch
+import torch.nn as nn 
+from torch.nn import functional as F
+
+# -----
+
+# hyperparameters 
+batch_size = 64
+block_size = 8 
+max_iters = 3000
+eval_interval = 300
+learning_rate = 1e-2 
+device = 'cuda' if torch.cuda.is_available() else 'cpu'
+eval_iters = 200 
+# -------
+
+torch.manual_seed(1337)
+
+# !wget https://raw.githubusercontent.com/karpathy/char-rnn/master/data/tinyshakespeare/input.txt
 with open('input.txt', 'r', encoding='utf-8')as f :
     text = f.read()
-
-print(f'length of the dataset is {len(text)}')
 
 # All the characters 
 chars = sorted(list(set(text)))
 vocab_size = len(chars)
-print("".join(chars))
-print(vocab_size)
 
 # mapping from string to int
 stoi = {ch:i for i, ch in enumerate(chars)} # this is the dictionary for string to int 
@@ -15,54 +32,41 @@ itos= {i:ch for i , ch in enumerate(chars)} # for i to strings
 encode = lambda s: [stoi[ch] for ch in s ] # encoder gives out the encoded string in form of list 
 decode = lambda l: ''.join([itos[i] for i in l]) # decoder gives the decoded sttring
 
-print(encode("Hi Jainit"))
-print(decode(encode("hi Jainit")))
+
 
 # now lets bring in the tensors 
-import torch 
 data = torch.tensor(encode(text), dtype= torch.long)
-print(data[:100])
 
+# spliting the dataset to train and test 
 n = int(0.9*(len(data)))
 train_data=data[:n]
 val_data = data[n:]
 
-block_size = 8
-train_data[:block_size+1]
 
-x = train_data[:block_size]
-y= train_data[1:block_size+1]
-for t in range (block_size):
-    context = x[:t+1]
-    target = y[t]
-    print(f"when the input is {context}, the target is {target}")
-
-torch.manual_seed(1337)
-batch_size = 4
-block_size = 8 
-
+# data loading 
 def get_batch(split):
     # generate a small batch of data of inputs x and targets y
     data = train_data if split =='train' else val_data
     ix = torch.randint(len(data)-block_size,(batch_size,))
     x = torch.stack([data[i:i+block_size]for i in ix])
     y = torch.stack([data[i+1:i+block_size+1 ]for i in ix])
-    
-    return x, y
+    return x.to(device), y.to(device)
 
-xb , yb = get_batch('train')
-print('inputs:')
-print(xb.shape)
-print(xb)
-print('targets')
-print(yb.shape)
-print(yb)
-print('----')
+@torch.no_grad()
+def estimate_loss():
+    out={}
+    model.eval()
+    for split in ['train', 'val']:
+        losses = torch.zeros(eval_iters)
+        for k in range(eval_iters):
+            X,Y = get_batch(split)
+            logits, loss = model(X,Y)
+            losses[k] = loss.item()
+        out[split]= losses.mean()
+    model.train()
+    return out
 
-import torch.nn as nn 
-from torch.nn import functional as F
-torch.manual_seed(1337)
-
+#super simple Bigram Model
 class BigramLM(nn.Module):
 
     def __init__ (self,vocab_size):
@@ -94,22 +98,31 @@ class BigramLM(nn.Module):
             idx = torch.cat((idx , idx_next ), dim =1 ) # (B,T+1)
         return idx 
         
-m = BigramLM(vocab_size)
-logits, loss = m(xb , yb)
-print(logits.shape)
-print(loss)
-print(decode(m.generate(idx=torch.zeros((1,1), dtype = torch.long),max_new_tokens=100)[0].tolist()))
+model = BigramLM(vocab_size)
+model.to(device)
+
 
 # create a PyTorch optimiser 
-optimizer = torch.optim.AdamW(m.parameters(), lr = 1e-3)
+optimizer = torch.optim.AdamW(model.parameters(), lr = 1e-3)
 
-batch_size = 32
-for steps in range(10000):
+for iter in range(max_iters):
+
+    #every once in a while evaluate the loss on train and val sets
+    if iter % eval_interval== 0: 
+        losses = estimate_loss()
+        print(f"step {iter}: train loss {losses['train']:.4f}")
+
+    # sample a batch of data
     xb, yb = get_batch('train')
-    logits , loss = m(xb, yb)
-    optimizer.zero_grad()
+
+    # evaluate the logits and loss 
+    logits, loss = model(xb, yb)
+    optimizer.zero_grad(set_to_none=True)
     loss.backward()
     optimizer.step()
 
-print(loss.item())
+
+#generate from the model 
+context =torch.zeros((1,1), dtype= torch.long, device = device)
+print(decode(model.generate(context, max_new_tokens=500)[0].tolist()))
 
